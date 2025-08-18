@@ -1,0 +1,100 @@
+name: Kernel Builder --
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            git \
+            curl \
+            unzip \
+            bc \
+            python3 \
+            make \
+            gcc \
+            g++ \
+            patch
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: ldbsmh/android_kernel_xiaomi_marble
+          ref: melt-rebase-4LazyGoogle
+          path: kernel
+          fetch-depth: 0
+
+      - name: Setup Clang toolchain
+        run: |
+          mkdir clang
+          curl -L -o clang/clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/428d18d9732aa7ebfcaed87a582d86155db878d4/clang-r416183b.tar.gz
+          tar -zxf clang/clang.tar.gz -C clang
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+      - name: Build kernel
+        working-directory: ./kernel
+        run: |
+          export ARCH=arm64
+          export PATH=${CLANG_PATH}:${PATH}
+          export KBUILD_BUILD_HOST="Marble"
+          export KBUILD_BUILD_USER="Guxin12"
+          make LLVM=1 LLVM_IAS=1 O=out mrproper
+          make LLVM=1 LLVM_IAS=1 O=out marble_defconfig
+          make LLVM=1 LLVM_IAS=1 O=out -j$(nproc --all)
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          echo "IMAGE_NAME=marble-kernel-$TIMESTAMP" >> $GITHUB_ENV
+          echo "IMAGE_PATH=$(pwd)/out/arch/arm64/boot/Image" >> $GITHUB_ENV
+          echo "ARTIFACT_PREFIX=vanilla" >> $GITHUB_ENV
+      - name: Prepare AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
+          cat > AnyKernel3/anykernel.sh << 'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+          properties() {
+            kernel.string=Vanilla by Guxin12 @酷安初春在路野
+            do.devicecheck=1
+            do.modules=0
+            do.systemless=1
+            do.cleanup=1
+            do.cleanuponabort=0
+            device.name1=marble
+            device.name2=marblein
+          }
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          . tools/ak3-core.sh;
+          if [ -L "/dev/block/bootdevice/by-name/init_boot_a" -o -L "/dev/block/by-name/init_boot_a" ]; then
+              split_boot
+              flash_boot
+          else
+              dump_boot
+              write_boot
+          fi
+          EOF
+          cp ${{ env.IMAGE_PATH }} AnyKernel3/Image
+          echo "ZIP_NAME=marblekernel.zip" >> $GITHUB_ENV
+      - name: Package AnyKernel3
+        working-directory: ./AnyKernel3
+        run: |
+          zip -r9 ../${{ env.ZIP_NAME }} *
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-kernel-${{ env.IMAGE_NAME }}
+          path: |
+            ${{ env.IMAGE_PATH }}
+            ${{ env.ZIP_NAME }}
+          retention-days: 7
